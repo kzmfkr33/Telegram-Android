@@ -1,0 +1,75 @@
+name: Build Telegram TV
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Disk alani ac
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: TV uyarlamasi ve API anahtari
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+
+          # 1) Manifest: dokunmatik ekran zorunlu degil + TV ana ekran kategorisi
+          for p in pathlib.Path('.').rglob('AndroidManifest.xml'):
+              if any(x in p.parts for x in ('build', '.cxx', 'node_modules')):
+                  continue
+              s = p.read_text(encoding='utf-8')
+              o = s
+              if '<application' in s and 'android.hardware.touchscreen' not in s:
+                  s = s.replace(
+                      '<application',
+                      '<uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n'
+                      '    <uses-feature android:name="android.software.leanback" android:required="false" />\n'
+                      '    <application', 1)
+              s = re.sub(
+                  r'(<category android:name="android.intent.category.LAUNCHER"\s*/>)(?!\s*<category android:name="android.intent.category.LEANBACK_LAUNCHER")',
+                  r'\1\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />',
+                  s)
+              if s != o:
+                  p.write_text(s, encoding='utf-8')
+                  print('Guncellendi:', p)
+
+          # 2) Kendi api_id / api_hash degerleriniz
+          api_id = os.environ.get('TG_API_ID', '').strip()
+          api_hash = os.environ.get('TG_API_HASH', '').strip()
+          if api_id and api_hash:
+              bv = pathlib.Path('TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java')
+              t = bv.read_text(encoding='utf-8')
+              t, n1 = re.subn(r'APP_ID\s*=\s*\d+\s*;', f'APP_ID = {int(api_id)};', t)
+              t, n2 = re.subn(r'APP_HASH\s*=\s*"[^"]*"\s*;', f'APP_HASH = "{api_hash}";', t)
+              print('APP_ID degisti:', n1, ' APP_HASH degisti:', n2)
+              assert n1 >= 1 and n2 >= 1, 'BuildVars.java icinde APP_ID/APP_HASH bulunamadi'
+              bv.write_text(t, encoding='utf-8')
+          else:
+              print('Secret yok, varsayilan api anahtarlari kullanilacak')
+          PY
+
+      - name: Docker ile derle (resmi yontem)
+        run: |
+          docker build -t telegram-build .
+          docker run --rm -v "$PWD":/home/source telegram-build
+
+      - name: APK dosyalari
+        run: find . -name "*.apk" -path "*outputs*" -exec ls -lh {} \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TelegramTV-apk
+          path: TMessagesProj/build/outputs/apk/afat/**/*.apk
+          if-no-files-found: error
